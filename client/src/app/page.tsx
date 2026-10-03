@@ -1,240 +1,112 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { API_URL } from "@/lib/config";
-import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import AgentForm from "@/components/task-agent/AgentForm";
+import RunLogs from "@/components/task-agent/RunLogs";
+import { approveAgent, startAgent } from "@/lib/api";
+import { FinalView, InterruptView } from "@/lib/types";
+import { useState } from "react";
 
-type SearchResponse = {
-  answer: string;
-  sources: string[];
-};
-
-type CurrentChatTurn =
-  | {
-      role: "user";
-      content: string;
-    }
-  | {
-      role: "assistant";
-      content: string;
-      sources: string[];
-      time: number;
-      error?: string;
-    };
-
-export default function Home() {
-  const [query, setQuery] = useState("");
+export default function AgentPage() {
   const [loading, setLoading] = useState(false);
-  const [chat, setChat] = useState<CurrentChatTurn[]>([]);
+  const [interrupt, setInterrupt] = useState<InterruptView | null>(null);
+  const [final, setFinal] = useState<FinalView | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(null);
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [chat]);
-
-  const runSearch = async (prompt: string) => {
+  const handleAgentStart = async (input: string) => {
     setLoading(true);
-    setChat((old) => [...old, { role: "user", content: prompt }]);
-    const oldTime = performance.now();
+    setFinal(null);
+    setInterrupt(null);
+    setThreadId(null);
 
     try {
-      const res = await fetch(`${API_URL}/search`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ q: prompt }),
-      });
-      const json = await res.json();
-      const timeDiff = Math.round(performance.now() - oldTime);
-
-      //error handling
-      if (!res.ok) {
-        const errorMsg = "Request failed";
-        setChat((old) => [
-          ...old,
-          {
-            role: "assistant",
-            content:
-              "I tried to answer, but something went wrong, please try again",
-            sources: [],
-            time: timeDiff,
-            error: errorMsg,
-          },
-        ]);
-        //success
-      } else {
-        const data = json as SearchResponse;
-        setChat((old) => [
-          ...old,
-          {
-            role: "assistant",
-            content: data.answer,
-            sources: data.sources,
-            time: timeDiff,
-          },
-        ]);
+      const res = await startAgent(input);
+      if (res.status === "error") {
+        throw new Error(res.error);
       }
-    } catch (e) {
-      const timeDiff = Math.round(performance.now() - oldTime);
-      const errorMsg = "Request failed";
-      setChat((old) => [
-        ...old,
-        {
-          role: "assistant",
-          content:
-            "I tried to answer, but something went wrong, please try again",
-          sources: [],
-          time: timeDiff,
-          error: errorMsg,
-        },
-      ]);
+      if (res.data?.kind === "needs_approval") {
+        setThreadId(res.data.interrupt.threadId);
+        setInterrupt(res.data.interrupt);
+      } else if (res.data?.kind === "final") {
+        setFinal(res.data?.final);
+      } else {
+        throw new Error("Some error occured");
+      }
+    } catch (err: any) {
+      setFinal({
+        status: "cancelled",
+        message: err?.message ?? "Failed to start agent run",
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleChatSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const prompt = query.trim();
-    if (!prompt || loading) {
+  const handleOnApprove = async () => {
+    if (!threadId) {
       return;
     }
-    setQuery("");
-    await runSearch(prompt);
+    setLoading(true);
+
+    try {
+      const res = await approveAgent(threadId, true);
+      if (res.status === "error") {
+        throw new Error(res.error);
+      }
+      setInterrupt(null);
+      setFinal(res.data?.final ?? null);
+    } catch (err: any) {
+      setFinal({
+        status: "cancelled",
+        message: err?.message ?? "Failed to approve the flow",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOnReject = async () => {
+    if (!threadId) {
+      return;
+    }
+    setLoading(true);
+
+    try {
+      const res = await approveAgent(threadId, false);
+      if (res.status === "error") {
+        throw new Error(res.error);
+      }
+      setInterrupt(null);
+      setFinal(res.data?.final ?? null);
+    } catch (err: any) {
+      setFinal({
+        status: "cancelled",
+        message: err?.message ?? "Failed to reject the flow",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="flex h-dvh flex-col bg-[#f9fafb] text-gray-900">
-      <header className="border-b bg-white px-4 py-3 text-sm flex items-center justify-between">
-        <div className="flex flex-col">
-          <span className="font-medium text-gray">
-            Search V1 (LCEL Web Agent)
-          </span>
-          <span className="text-[11px] text-gray-500">
-            Answer with sources. Some queries will browse the web and some
-            don't.
-          </span>
+    <main className="min-h-screen">
+      <div className="max-w-5xl mx-auto space-y-6 py-8">
+        <div className="text-center mb-8 space-y-2">
+          <h1 className="text-4xl font-bold text-cyan-700">
+            LangGraph Task Agent
+          </h1>
+          <p className="text-muted-foreground text-lg">
+            AI-Powered task planning and execution with human-in-the-loop
+          </p>
         </div>
-      </header>
-      <main className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
-        {chat.length === 0 && (
-          <div className="mx-auto max-2-2xl text-center text-sm text-gray-500">
-            <div className="text-base font-semibold text-gray-800 mb-1">
-              Ask anything
-            </div>
-            <div className="text-[14px] leading-relaxed">
-              Examples:
-              <br />
-              <code className="rounded bg-gray-100 px-1 py-2 text-[12px]">
-                Top 10 engineering colleges in India 2026
-              </code>
-              <br />
-              <code className="rounded bg-gray-100 px-1 py-2 text-[12px]">
-                Explain what docker is for begineers
-              </code>
-            </div>
-          </div>
-        )}
-        {chat.map((turn, idx) => {
-          if (turn.role === "user") {
-            return (
-              <div
-                key={idx}
-                className="mx-auto max-w-2xl flex justify-end text-right"
-              >
-                <div className="inline-block rounded-2xl bg-gray-900 px-4 py-3 text-sm text-white shadow-md max-w-full">
-                  <div className="whitespace-pre-wrap break-words">
-                    {turn.content}
-                  </div>
-                </div>
-              </div>
-            );
-          }
-          // for assistant role:
-          return (
-            <div
-              key={idx}
-              className="mx-auto max-w-2 flex items-start gap-3 text-left"
-            >
-              <div className="flex h-8 w-8 flex-none items-center justify-center rounded-md bbg-gray-800 text-[11px] text-white font-semibold">
-                AI
-              </div>
-              <div className="flex-1 space-y-3">
-                <div className="inline-block rounded-2xl bg-white px-4 py-3 text-sm text-gray-900 shadow-sm ring-1 ring-gray-200 whitespace-pre-wrap wrap-break-word">
-                  {turn.content}
-                </div>
-                <div className="text-[11px] text-gray-500 flex flex-wrap items-center gap-x-2">
-                  {typeof turn.time === "number" && (
-                    <span>answer in {turn.time}</span>
-                  )}
-                  {turn?.error && <span>{turn.error}</span>}
-                </div>
-                {turn.sources && turn.sources.length > 0 && (
-                  <div className="rounded-lg bg-white px-3 py-2 text-[12px] shadow-sm ring-1 ring-gray-200">
-                    <div className="text-[11px] font-medium text-gray-600 mb-1">
-                      Sources
-                    </div>
-                    <ul className="space-y-1">
-                      {turn.sources.map((source, idx) => (
-                        <li key={idx} className="truncate">
-                          <Link
-                            href={source}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-blue-500 underline underline-offset-4 break-all"
-                          >
-                            {source}
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {loading && (
-          <div className="mx-auto max-w-2xl flex items-start gap-3 text-left">
-            <div className="flex h-8 w-8 flex-none items-center just-center rounded-md bg-gray-700 text-[11px] font-semibold text-white">
-              ...
-            </div>
-            <p className="inline-block rounded-2xl bg-gray-900 px-4 py-3 text-sm text-white shadow-md max-w-full">
-              Thinking
-            </p>
-          </div>
-        )}
-        <footer className="border-t bg-white ps-4 py-4">
-          <form
-            className="mx-auto flex w-full max-w-2xl items-end gap-2"
-            onSubmit={handleChatSubmit}
-          >
-            <div>
-              <Input
-                className="w-full resize-none"
-                placeholder="Ask your query..."
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                disabled={loading}
-              />
-            </div>
-            <Button
-              className="shrink-0"
-              disabled={loading || query.trim().length < 5}
-              type="submit"
-            >
-              {loading ? "..." : "Send"}
-            </Button>
-          </form>
-        </footer>
-      </main>
-    </div>
+        <AgentForm disabled={loading} onStart={handleAgentStart} />
+        <RunLogs
+          interrupt={interrupt}
+          final={final}
+          loading={loading}
+          onApprove={handleOnApprove}
+          onReject={handleOnReject}
+        />
+      </div>
+    </main>
   );
 }
