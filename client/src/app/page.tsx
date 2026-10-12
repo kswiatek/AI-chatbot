@@ -1,112 +1,296 @@
 "use client";
 
-import AgentForm from "@/components/task-agent/AgentForm";
-import RunLogs from "@/components/task-agent/RunLogs";
-import { approveAgent, startAgent } from "@/lib/api";
-import { FinalView, InterruptView } from "@/lib/types";
-import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
+import { Send, UploadIcon } from "lucide-react";
+import { ChangeEvent, useState } from "react";
+
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5174";
+
+type Citation = {
+  source: string;
+  chunkId: number;
+  preview: string;
+};
+
+type RunResult = {
+  ok: boolean;
+  threadId: string;
+  answer: string;
+  citations: Citation[];
+};
+
+type ChatBubble = {
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+};
+
+const ChatRow = ({ msg }: { msg: ChatBubble }) => {
+  const isUser = msg.role === "user";
+
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div className="flex gap-3 max-w-2xl">
+        {!isUser && (
+          <div className="w-8 h-8 rounded-lg bg-linear-to-br from-blue-500 to-purple-600 shrink-0 flex items-center justify-center">
+            <span className="text-white text-xs font-bold">AG</span>
+          </div>
+        )}
+        <div
+          className={`rounded-xl px-4 py-4 text-sm leading-relaxed ${isUser ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-900"}`}
+        >
+          <div className="whitespace-pre-wrap">{msg.content}</div>
+          {!isUser && msg.citations && msg.citations.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {msg.citations.map((citation, i) => (
+                <Badge
+                  key={i}
+                  variant="secondary"
+                  className="text-xs bg-slate-100 text-slate-700"
+                >
+                  {citation.source} #{citation.chunkId}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default function AgentPage() {
+  // chat state
+  const [input, setInput] = useState("");
+  const [thread, setThread] = useState<ChatBubble[]>([]);
   const [loading, setLoading] = useState(false);
-  const [interrupt, setInterrupt] = useState<InterruptView | null>(null);
-  const [final, setFinal] = useState<FinalView | null>(null);
+
   const [threadId, setThreadId] = useState<string | null>(null);
 
-  const handleAgentStart = async (input: string) => {
-    setLoading(true);
-    setFinal(null);
-    setInterrupt(null);
-    setThreadId(null);
+  // KB upload on UI panel
+  const [showUploadPanel, setShowUploadPanel] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [ingestRes, setIngestRes] = useState<string | null>(null);
 
+  const uploadFile = async (file: File) => {
+    setUploadMsg("Uploading.");
     try {
-      const res = await startAgent(input);
-      if (res.status === "error") {
-        throw new Error(res.error);
-      }
-      if (res.data?.kind === "needs_approval") {
-        setThreadId(res.data.interrupt.threadId);
-        setInterrupt(res.data.interrupt);
-      } else if (res.data?.kind === "final") {
-        setFinal(res.data?.final);
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const res = await fetch(`${BASE}/kb/upload`, {
+        method: "POST",
+        body: fd,
+      });
+
+      const json = await res.json();
+      setIngestRes(JSON.stringify(json, null, 2));
+
+      if (res.ok && json.ok) {
+        setUploadMsg("Uploaded and ingested into KB");
       } else {
-        throw new Error("Some error occured");
+        setUploadMsg("Uploaded or ingested failed");
       }
-    } catch (err: any) {
-      setFinal({
-        status: "cancelled",
-        message: err?.message ?? "Failed to start agent run",
-      });
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      setUploadMsg("Upload failed..." + err);
     }
   };
 
-  const handleOnApprove = async () => {
-    if (!threadId) {
-      return;
+  const onFileInput = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadFile(file);
     }
-    setLoading(true);
-
-    try {
-      const res = await approveAgent(threadId, true);
-      if (res.status === "error") {
-        throw new Error(res.error);
-      }
-      setInterrupt(null);
-      setFinal(res.data?.final ?? null);
-    } catch (err: any) {
-      setFinal({
-        status: "cancelled",
-        message: err?.message ?? "Failed to approve the flow",
-      });
-    } finally {
-      setLoading(false);
-    }
+    e.currentTarget.value = "";
   };
 
-  const handleOnReject = async () => {
-    if (!threadId) {
+  const onRun = async () => {
+    const userContent = input.trim();
+    if (!userContent) {
       return;
     }
+
+    const userMsg: ChatBubble = { role: "user", content: userContent };
+    setThread((thread) => [...thread, userMsg]);
+    setInput("");
     setLoading(true);
 
     try {
-      const res = await approveAgent(threadId, false);
-      if (res.status === "error") {
-        throw new Error(res.error);
-      }
-      setInterrupt(null);
-      setFinal(res.data?.final ?? null);
-    } catch (err: any) {
-      setFinal({
-        status: "cancelled",
-        message: err?.message ?? "Failed to reject the flow",
+      const res = await fetch(`${BASE}/agent/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          threadId,
+          message: userContent,
+        }),
       });
+
+      if (!res.ok) {
+        setThread((thread) => [
+          ...thread,
+          { role: "assistant", content: "Something went wrong" },
+        ]);
+        return;
+      }
+
+      const json: RunResult = await res.json();
+      if (json.threadId && json.threadId !== threadId) {
+        setThreadId(json.threadId);
+      }
+      const assistantMsg: ChatBubble = {
+        role: "assistant",
+        content: json.answer,
+        citations: json.citations || [],
+      };
+
+      setThread((thread) => [...thread, assistantMsg]);
+    } catch (err) {
+      console.log("🚀 ~ onRun ~ err:", err);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <main className="min-h-screen">
-      <div className="max-w-5xl mx-auto space-y-6 py-8">
-        <div className="text-center mb-8 space-y-2">
-          <h1 className="text-4xl font-bold text-cyan-700">
-            LangGraph Task Agent
-          </h1>
-          <p className="text-muted-foreground text-lg">
-            AI-Powered task planning and execution with human-in-the-loop
-          </p>
+    <div className="h-screen flex flex-col bg-linear-to-b from-slate-50 to-slate-100">
+      <div className="border-b border-slate-200 bg-white shadow-sm">
+        <div className="max-w-6xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-purple-600">
+              <span className="text-white font-bold text-sm">AG</span>
+            </div>
+            <h1 className="text-lg font-semibold text-slate-900">Agent</h1>
+          </div>
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => setShowUploadPanel(!showUploadPanel)}
+          >
+            <UploadIcon className="h-4 w-4" />
+            Upload KB
+          </Button>
         </div>
-        <AgentForm disabled={loading} onStart={handleAgentStart} />
-        <RunLogs
-          interrupt={interrupt}
-          final={final}
-          loading={loading}
-          onApprove={handleOnApprove}
-          onReject={handleOnReject}
-        />
       </div>
-    </main>
+
+      {/* main content */}
+      <div className="flex-1 flex overflow-auto">
+        {/* chat area */}
+        <div className="flex-1 flex flex-col">
+          <ScrollArea>
+            <div className="max-w-3xl mx-auto space-y-4 pb-8">
+              {thread.length === 0 && !loading && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center space-y-4">
+                    <div className="w-16 h-16 rounded-2xl bg-linear-to-br from-blue-500 to-purple-600 max-auto flex items-center justify-center">
+                      <UploadIcon className="w-8 h-8 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-semibold text-slat-950 mb-2">
+                        Welcome to Agent
+                      </h2>
+                      <p className="text-slate-600">
+                        Upload your docs and ask queries based on your own
+                        knowledge base
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {thread.map((msg, i) => (
+                <ChatRow key={i} msg={msg} />
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="bg-slate-100 text-slate-900 rounded-2xl px-4 py-3 flex gap-2">
+                    <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" />
+                    <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:0.2s]" />
+                    <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce [animation-delay:0.2s]" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+          <div className="border-t border-slate-200 bg-white p-5 md:p-6">
+            <div className="max-w-3xl mx-auto space-y-3">
+              <Textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask anything about your uploaded docs..."
+                className="resize-none min-h-[100px] rounded-xl border-slate-400 bg-slate-500"
+              />
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-slate-500">
+                  {threadId && (
+                    <span>
+                      Thread: <code className="text-[10px]">{threadId}</code>
+                    </span>
+                  )}
+                </div>
+                <Button
+                  className="gap-2 rounded-lg bg-linear-to-br from-blue-500 to-purple-600 text-white"
+                  onClick={onRun}
+                >
+                  {loading ? "Thinking..." : "Send"}
+                </Button>
+                <Send className="w-5 h-5" />
+              </div>
+            </div>
+          </div>
+        </div>
+        {showUploadPanel && (
+          <div className="w-96 border-l border-slate-200 flex flex-col overflow-hidden">
+            <div className="border-b border-slate-200 p-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-slate-900">Knowledge Base</h2>
+                <button
+                  onClick={() => setShowUploadPanel(false)}
+                  className="bg-linear-to-br from-blue-500 to-purple-600 p-2 text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <ScrollArea className="flex-1 p-4 space-y-4">
+              <div className="space-y-2 mb-4">
+                <Label className="text-slate-700 font-medium">
+                  Namespace : Default
+                </Label>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <Label className="text-slate-700 font-medium">
+                  Upload File
+                </Label>
+                <div className="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 text-cemter">
+                  <Input
+                    type="file"
+                    accept=".pdf, .txt, .md, application/pdf, text/plain, text/markdown"
+                    onChange={onFileInput}
+                    id="file-upload"
+                  />
+                </div>
+              </div>
+              {uploadMsg && (
+                <div className="p-3 text-sm text-slate-700">{uploadMsg}</div>
+              )}
+              {ingestRes && (
+                <div className="p-3 text-sm text-slate-700">
+                  <Label>Last ingest response</Label>
+                  <p>{ingestRes}</p>
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

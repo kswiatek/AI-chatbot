@@ -2,8 +2,10 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { searchRouter } from "./routes/search_lcel";
-import { kbRouter } from "./routes/light_rag_kb";
+import { kbRouter as lightRagKbRouter } from "./routes/light_rag_kb";
+import { kbRouter } from "./routes/kb";
 import agentRouter from "./routes/graph";
+import { agentRouter as agentRouterV2 } from "./routes/agent";
 import { env } from "./utils/env";
 
 const app = express();
@@ -20,8 +22,10 @@ app.use(
 app.use(express.json());
 
 app.use("/search", searchRouter);
+app.use("/lightRagKb", lightRagKbRouter);
 app.use("/kb", kbRouter);
 app.use("/agent", agentRouter);
+app.use("/agent", agentRouterV2);
 
 const port = env.PORT;
 app.listen(port, () => {

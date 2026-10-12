@@ -46,7 +46,7 @@ export default function LightRagKB() {
     setIngestMessage(null);
 
     try {
-      const res = await fetch(`${API_URL}/kb/ingest`, {
+      const res = await fetch(`${API_URL}/lightRagKb/ingest`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -79,7 +79,7 @@ export default function LightRagKB() {
     const time = performance.now();
 
     try {
-      const res = await fetch(`${API_URL}/kb/ask`, {
+      const res = await fetch(`${API_URL}/lightRagKb/ask`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
